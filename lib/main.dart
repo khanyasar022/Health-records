@@ -4,6 +4,9 @@ import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'dart:io';
+import 'package:http/http.dart' as http;
+import 'package:path_provider/path_provider.dart';
 
 // Feature screens
 import 'features/qr_code/qr_scanner_screen.dart';
@@ -77,30 +80,89 @@ void main() async {
 }
 
 Future<void> _showLocalNotification(RemoteMessage message) async {
-  final AndroidNotificationDetails androidPlatformChannelSpecifics =
+  String? imageUrl = message.notification?.android?.imageUrl ??
+                     message.notification?.apple?.imageUrl ??
+                     message.data['imageUrl'] as String?;
+
+  String? localImagePath;
+
+  if (imageUrl != null && imageUrl.isNotEmpty) {
+    try {
+      localImagePath = await _downloadAndSaveImage(imageUrl, 'notification_image');
+    } catch (e) {
+      print('Error downloading notification image: $e');
+      // Proceed without image if download fails
+    }
+  }
+
+  // Android Notification Details
+  AndroidNotificationDetails androidPlatformChannelSpecifics =
       AndroidNotificationDetails(
-    'phr_channel', 
-    'PHR Notifications',
-    channelDescription: 'PHR app notifications channel',
+    'phr_channel_rich', // New channel ID for rich notifications
+    'PHR Rich Notifications',
+    channelDescription: 'PHR app notifications channel with images',
     importance: Importance.max,
     priority: Priority.high,
+    styleInformation: localImagePath != null
+        ? BigPictureStyleInformation(
+            FilePathAndroidBitmap(localImagePath), // Use FilePathAndroidBitmap for local files
+            largeIcon: FilePathAndroidBitmap(localImagePath),
+            contentTitle: message.notification?.title,
+            htmlFormatContentTitle: true,
+            summaryText: message.notification?.body,
+            htmlFormatSummaryText: true,
+          )
+        : const DefaultStyleInformation(true, true),
   );
-  
-  final DarwinNotificationDetails iOSPlatformChannelSpecifics =
-      DarwinNotificationDetails();
-      
-  final NotificationDetails platformChannelSpecifics = NotificationDetails(
+
+  // iOS Notification Details
+  List<DarwinNotificationAttachment>? attachments;
+  if (localImagePath != null) {
+    try {
+      attachments = [
+        DarwinNotificationAttachment(localImagePath,
+            identifier: 'imageAttachment')
+      ];
+    } catch (e) {
+      print('Error creating iOS notification attachment: $e');
+    }
+  }
+
+  DarwinNotificationDetails iOSPlatformChannelSpecifics =
+      DarwinNotificationDetails(
+    presentAlert: true,
+    presentBadge: true,
+    presentSound: true,
+    attachments: attachments,
+  );
+
+  NotificationDetails platformChannelSpecifics = NotificationDetails(
     android: androidPlatformChannelSpecifics,
     iOS: iOSPlatformChannelSpecifics,
   );
-  
+
   await flutterLocalNotificationsPlugin.show(
-    0, // Notification ID
+    message.hashCode, // Use a unique ID for each notification
     message.notification?.title ?? 'New Notification',
     message.notification?.body ?? '',
     platformChannelSpecifics,
-    payload: 'notifications', // Navigate to notifications screen when tapped
+    payload: message.data['navigation_path'] as String? ?? 'notifications',
   );
+}
+
+// Helper function to download and save image
+Future<String?> _downloadAndSaveImage(String url, String fileName) async {
+  try {
+    final Directory directory = await getTemporaryDirectory();
+    final String filePath = '${directory.path}/$fileName.png'; // Assuming png, adjust if needed
+    final http.Response response = await http.get(Uri.parse(url));
+    final File file = File(filePath);
+    await file.writeAsBytes(response.bodyBytes);
+    return filePath;
+  } catch (e) {
+    print('Error in _downloadAndSaveImage: $e');
+    return null;
+  }
 }
 
 class MyApp extends StatelessWidget {
